@@ -58,7 +58,7 @@ func TestTopK(t *testing.T) {
 
 	var keys []string
 
-	for k, _ := range exact {
+	for k := range exact {
 		keys = append(keys, k)
 	}
 
