@@ -70,8 +70,8 @@ func TestTopK(t *testing.T) {
 
 	// at least the top 25 must be in order
 	for i := 0; i < 25; i++ {
-		if *top[i].Key != freq.keys[i] {
-			t.Errorf("key mismatch: idx=%d top=%s (%d) exact=%s (%d)", i, *top[i].Key, top[i].Count, freq.keys[i], freq.counts[freq.keys[i]])
+		if top[i].Key != freq.keys[i] {
+			t.Errorf("key mismatch: idx=%d top=%s (%d) exact=%s (%d)", i, top[i].Key, top[i].Count, freq.keys[i], freq.counts[freq.keys[i]])
 		}
 	}
 	for k, v := range exact {
@@ -84,7 +84,7 @@ func TestTopK(t *testing.T) {
 		}
 	}
 	for _, k := range top {
-		e := tk.Estimate(*k.Key)
+		e := tk.Estimate(k.Key)
 		if e != k {
 			t.Errorf("estimate differs from top keys: key=%v, estimate=%v(-%v) top=%v(-%v)", e.Key, e.Count, e.Error, k.Count, k.Error)
 		}

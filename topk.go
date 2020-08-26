@@ -30,12 +30,19 @@ import (
 
 // Element is a TopK item
 type Element struct {
+	Key   string
+	Count int
+	Error int
+}
+
+// Element is a TopK item
+type element struct {
 	Key   *string
 	Count int
 	Error int
 }
 
-type elementsByCountDescending []Element
+type elementsByCountDescending []element
 
 func (elts elementsByCountDescending) Len() int { return len(elts) }
 func (elts elementsByCountDescending) Less(i, j int) bool {
@@ -45,7 +52,7 @@ func (elts elementsByCountDescending) Swap(i, j int) { elts[i], elts[j] = elts[j
 
 type keys struct {
 	m    map[string]int
-	elts []Element
+	elts []element
 }
 
 func (tk *keys) EncodeMsgp(w *msgp.Writer) error {
@@ -106,7 +113,7 @@ func (tk *keys) DecodeMsp(r *msgp.Reader) error {
 		return err
 	}
 
-	tk.elts = make([]Element, sz)
+	tk.elts = make([]element, sz)
 	for i := range tk.elts {
 		x := ""
 		tk.elts[i].Key = &x
@@ -142,13 +149,13 @@ func (tk *keys) Swap(i, j int) {
 }
 
 func (tk *keys) Push(x interface{}) {
-	e := x.(Element)
+	e := x.(element)
 	tk.m[*e.Key] = len(tk.elts)
 	tk.elts = append(tk.elts, e)
 }
 
 func (tk *keys) Pop() interface{} {
-	var e Element
+	var e element
 	e, tk.elts = tk.elts[len(tk.elts)-1], tk.elts[:len(tk.elts)-1]
 
 	delete(tk.m, *e.Key)
@@ -167,7 +174,7 @@ type Stream struct {
 func New(n int) *Stream {
 	return &Stream{
 		n:      n,
-		k:      keys{m: make(map[string]int), elts: make([]Element, 0, n)},
+		k:      keys{m: make(map[string]int), elts: make([]element, 0, n)},
 		alphas: make([]int, n*6), // 6 is the multiplicative constant from the paper
 	}
 }
@@ -186,7 +193,7 @@ func (s *Stream) Insert(x string, count int) Element {
 		s.k.elts[idx].Count += count
 		e := s.k.elts[idx]
 		heap.Fix(&s.k, idx)
-		return e
+		return Element{Key: *e.Key, Count: e.Count, Error: e.Error}
 	}
 
 	// NOTE: This is where things go wrong
@@ -195,14 +202,14 @@ func (s *Stream) Insert(x string, count int) Element {
 	// can we track more elements?
 	if len(s.k.elts) < s.n {
 		// there is free space
-		e := Element{Key: ptr, Count: count}
+		e := element{Key: ptr, Count: count}
 		heap.Push(&s.k, e)
-		return e
+		return Element{Key: *e.Key, Count: e.Count, Error: e.Error}
 	}
 
 	if s.alphas[xhash]+count < s.k.elts[0].Count {
 		e := Element{
-			Key:   ptr,
+			Key:   *ptr,
 			Error: s.alphas[xhash],
 			Count: s.alphas[xhash] + count,
 		}
@@ -216,7 +223,7 @@ func (s *Stream) Insert(x string, count int) Element {
 	mkhash := reduce(sip13.Sum64Str(0, 0, *minKey), len(s.alphas))
 	s.alphas[mkhash] = s.k.elts[0].Count
 
-	e := Element{
+	e := element{
 		Key:   ptr,
 		Error: s.alphas[xhash],
 		Count: s.alphas[xhash] + count,
@@ -229,14 +236,18 @@ func (s *Stream) Insert(x string, count int) Element {
 	s.k.m[x] = 0
 
 	heap.Fix(&s.k, 0)
-	return e
+	return Element{Key: *e.Key, Count: e.Count, Error: e.Error}
 }
 
 // Keys returns the current estimates for the most frequent elements
 func (s *Stream) Keys() []Element {
-	elts := append([]Element(nil), s.k.elts...)
+	elts := append([]element(nil), s.k.elts...)
 	sort.Sort(elementsByCountDescending(elts))
-	return elts
+	converted := make([]Element, len(elts))
+	for i, e := range elts {
+		converted[i] = Element{Key: *e.Key, Count: e.Count, Error: e.Error}
+	}
+	return converted
 }
 
 // Estimate returns an estimate for the item x
@@ -246,11 +257,11 @@ func (s *Stream) Estimate(x string) Element {
 	// are we tracking this element?
 	if idx, ok := s.k.m[x]; ok {
 		e := s.k.elts[idx]
-		return e
+		return Element{Key: *e.Key, Count: e.Count, Error: e.Error}
 	}
 	count := s.alphas[xhash]
 	e := Element{
-		Key:   &x,
+		Key:   x,
 		Error: count,
 		Count: count,
 	}
