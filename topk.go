@@ -30,7 +30,7 @@ import (
 
 // Element is a TopK item
 type Element struct {
-	Key   string
+	Key   *string
 	Count int
 	Error int
 }
@@ -39,7 +39,7 @@ type elementsByCountDescending []Element
 
 func (elts elementsByCountDescending) Len() int { return len(elts) }
 func (elts elementsByCountDescending) Less(i, j int) bool {
-	return (elts[i].Count > elts[j].Count) || (elts[i].Count == elts[j].Count && elts[i].Key < elts[j].Key)
+	return (elts[i].Count > elts[j].Count) || (elts[i].Count == elts[j].Count && *elts[i].Key < *elts[j].Key)
 }
 func (elts elementsByCountDescending) Swap(i, j int) { elts[i], elts[j] = elts[j], elts[i] }
 
@@ -65,7 +65,7 @@ func (tk *keys) EncodeMsgp(w *msgp.Writer) error {
 		return err
 	}
 	for _, e := range tk.elts {
-		if err := w.WriteString(e.Key); err != nil {
+		if err := w.WriteString(*e.Key); err != nil {
 			return err
 		}
 		if err := w.WriteInt(e.Count); err != nil {
@@ -108,7 +108,9 @@ func (tk *keys) DecodeMsp(r *msgp.Reader) error {
 
 	tk.elts = make([]Element, sz)
 	for i := range tk.elts {
-		if tk.elts[i].Key, err = r.ReadString(); err != nil {
+		x := ""
+		tk.elts[i].Key = &x
+		if *tk.elts[i].Key, err = r.ReadString(); err != nil {
 			return err
 		}
 		if tk.elts[i].Count, err = r.ReadInt(); err != nil {
@@ -135,13 +137,13 @@ func (tk *keys) Swap(i, j int) {
 
 	tk.elts[i], tk.elts[j] = tk.elts[j], tk.elts[i]
 
-	tk.m[tk.elts[i].Key] = i
-	tk.m[tk.elts[j].Key] = j
+	tk.m[*tk.elts[i].Key] = i
+	tk.m[*tk.elts[j].Key] = j
 }
 
 func (tk *keys) Push(x interface{}) {
 	e := x.(Element)
-	tk.m[e.Key] = len(tk.elts)
+	tk.m[*e.Key] = len(tk.elts)
 	tk.elts = append(tk.elts, e)
 }
 
@@ -149,7 +151,7 @@ func (tk *keys) Pop() interface{} {
 	var e Element
 	e, tk.elts = tk.elts[len(tk.elts)-1], tk.elts[:len(tk.elts)-1]
 
-	delete(tk.m, e.Key)
+	delete(tk.m, *e.Key)
 
 	return e
 }
@@ -177,7 +179,6 @@ func reduce(x uint64, n int) uint32 {
 // Insert adds an element to the stream to be tracked
 // It returns an estimation for the just inserted element
 func (s *Stream) Insert(x string, count int) Element {
-
 	xhash := reduce(sip13.Sum64Str(0, 0, x), len(s.alphas))
 
 	// are we tracking this element?
@@ -188,17 +189,20 @@ func (s *Stream) Insert(x string, count int) Element {
 		return e
 	}
 
+	// NOTE: This is where things go wrong
+
+	ptr := &x
 	// can we track more elements?
 	if len(s.k.elts) < s.n {
 		// there is free space
-		e := Element{Key: x, Count: count}
+		e := Element{Key: ptr, Count: count}
 		heap.Push(&s.k, e)
 		return e
 	}
 
 	if s.alphas[xhash]+count < s.k.elts[0].Count {
 		e := Element{
-			Key:   x,
+			Key:   ptr,
 			Error: s.alphas[xhash],
 			Count: s.alphas[xhash] + count,
 		}
@@ -209,18 +213,18 @@ func (s *Stream) Insert(x string, count int) Element {
 	// replace the current minimum element
 	minKey := s.k.elts[0].Key
 
-	mkhash := reduce(sip13.Sum64Str(0, 0, minKey), len(s.alphas))
+	mkhash := reduce(sip13.Sum64Str(0, 0, *minKey), len(s.alphas))
 	s.alphas[mkhash] = s.k.elts[0].Count
 
 	e := Element{
-		Key:   x,
+		Key:   ptr,
 		Error: s.alphas[xhash],
 		Count: s.alphas[xhash] + count,
 	}
 	s.k.elts[0] = e
 
 	// we're not longer monitoring minKey
-	delete(s.k.m, minKey)
+	delete(s.k.m, *minKey)
 	// but 'x' is as array position 0
 	s.k.m[x] = 0
 
@@ -246,7 +250,7 @@ func (s *Stream) Estimate(x string) Element {
 	}
 	count := s.alphas[xhash]
 	e := Element{
-		Key:   x,
+		Key:   &x,
 		Error: count,
 		Count: count,
 	}
