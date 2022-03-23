@@ -42,6 +42,31 @@ func (elts elementsByCountDescending) Less(i, j int) bool {
 }
 func (elts elementsByCountDescending) Swap(i, j int) { elts[i], elts[j] = elts[j], elts[i] }
 
+const nPartitions = 6
+
+type partitions [nPartitions]keys
+
+func (p *partitions) EncodeMsgp(w *msgp.Writer) error {
+	for _, v := range *p {
+		if err := v.EncodeMsgp(w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p *partitions) DecodeMsgp(r *msgp.Reader) error {
+	var (
+		err error
+	)
+	for i := 0; i < 6; i++ {
+		if err = p[i].DecodeMsgp(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 type keys struct {
 	m    map[string]int
 	elts []Element
@@ -77,7 +102,7 @@ func (tk *keys) EncodeMsgp(w *msgp.Writer) error {
 	return nil
 }
 
-func (tk *keys) DecodeMsp(r *msgp.Reader) error {
+func (tk *keys) DecodeMsgp(r *msgp.Reader) error {
 	var (
 		err error
 		sz  uint32
@@ -156,16 +181,22 @@ func (tk *keys) Pop() interface{} {
 // Stream calculates the TopK elements for a stream
 type Stream struct {
 	n      int
-	k      keys
+	p      partitions // partitions are the different heaps
 	alphas []int
 }
 
 // New returns a Stream estimating the top n most frequent elements
 func New(n int) *Stream {
+	p := partitions{}
+	k := 1 + n/len(p)
+	for i := range p {
+		p[i] = keys{m: make(map[string]int, k), elts: make([]Element, 0, k)}
+	}
+
 	return &Stream{
 		n:      n,
-		k:      keys{m: make(map[string]int, n), elts: make([]Element, 0, n)},
-		alphas: make([]int, n*6), // 6 is the multiplicative constant from the paper
+		p:      p,
+		alphas: make([]int, n*nPartitions), // 6 is the multiplicative constant from the paper
 	}
 }
 
@@ -176,26 +207,27 @@ func reduce(x uint64, n int) uint32 {
 // Insert adds an element to the stream to be tracked
 // It returns an estimation for the just inserted element
 func (s *Stream) Insert(x string, count int) Element {
-
-	xhash := reduce(metro.Hash64Str(x, 0), len(s.alphas))
+	strHash := metro.Hash64Str(x, 0)
+	xhash := reduce(strHash, len(s.alphas))
+	i := strHash % uint64(len(s.p))
 
 	// are we tracking this element?
-	if idx, ok := s.k.m[x]; ok {
-		s.k.elts[idx].Count += count
-		e := s.k.elts[idx]
-		heap.Fix(&s.k, idx)
+	if idx, ok := s.p[i].m[x]; ok {
+		s.p[i].elts[idx].Count += count
+		e := s.p[i].elts[idx]
+		heap.Fix(&s.p[i], idx)
 		return e
 	}
 
 	// can we track more elements?
-	if len(s.k.elts) < s.n {
-		// there is free space
+	if len(s.p[i].elts) < s.n {
+		// there is free sp[i]ace
 		e := Element{Key: x, Count: count}
-		heap.Push(&s.k, e)
+		heap.Push(&s.p[i], e)
 		return e
 	}
 
-	if s.alphas[xhash]+count < s.k.elts[0].Count {
+	if s.alphas[xhash]+count < s.p[i].elts[0].Count {
 		e := Element{
 			Key:   x,
 			Error: s.alphas[xhash],
@@ -206,7 +238,7 @@ func (s *Stream) Insert(x string, count int) Element {
 	}
 
 	// replace the current minimum element
-	minElement := s.k.elts[0]
+	minElement := s.p[i].elts[0]
 
 	mkhash := reduce(metro.Hash64Str(minElement.Key, 0), len(s.alphas))
 	s.alphas[mkhash] = minElement.Count
@@ -216,14 +248,14 @@ func (s *Stream) Insert(x string, count int) Element {
 		Error: s.alphas[xhash],
 		Count: s.alphas[xhash] + count,
 	}
-	s.k.elts[0] = e
+	s.p[i].elts[0] = e
 
 	// we're not longer monitoring minKey
-	delete(s.k.m, minElement.Key)
+	delete(s.p[i].m, minElement.Key)
 	// but 'x' is as array position 0
-	s.k.m[x] = 0
+	s.p[i].m[x] = 0
 
-	heap.Fix(&s.k, 0)
+	heap.Fix(&s.p[i], 0)
 	return e
 }
 
@@ -233,84 +265,91 @@ func (s *Stream) Merge(other *Stream) error {
 		return fmt.Errorf("expected stream of size n %d, got %d", s.n, other.n)
 	}
 
-	// merge the elements
-	eKeys := make(map[string]struct{})
-	eMap := make(map[string]Element)
-	for _, e := range s.k.elts {
-		eKeys[e.Key] = struct{}{}
-	}
-	for _, e := range other.k.elts {
-		eKeys[e.Key] = struct{}{}
-	}
+	for i := range s.p {
 
-	for k := range eKeys {
-		idx1, ok1 := s.k.m[k]
-		idx2, ok2 := other.k.m[k]
-		xhash := reduce(metro.Hash64Str(k, 0), len(s.alphas))
-		min1 := other.alphas[xhash]
-		min2 := other.alphas[xhash]
-
-		switch {
-		case ok1 && ok2:
-			e1 := s.k.elts[idx1]
-			e2 := other.k.elts[idx2]
-			eMap[k] = Element{
-				Key:   k,
-				Count: e1.Count + e2.Count,
-				Error: e1.Error + e2.Error,
-			}
-		case ok1:
-			e1 := s.k.elts[idx1]
-			eMap[k] = Element{
-				Key:   k,
-				Count: e1.Count + min2,
-				Error: e1.Error + min2,
-			}
-		case ok2:
-			e2 := other.k.elts[idx2]
-			eMap[k] = Element{
-				Key:   k,
-				Count: e2.Count + min1,
-				Error: e2.Error + min1,
-			}
+		// merge the elements
+		eKeys := make(map[string]struct{})
+		eMap := make(map[string]Element)
+		for _, e := range s.p[i].elts {
+			eKeys[e.Key] = struct{}{}
+		}
+		for _, e := range other.p[i].elts {
+			eKeys[e.Key] = struct{}{}
 		}
 
-	}
+		for k := range eKeys {
+			idx1, ok1 := s.p[i].m[k]
+			idx2, ok2 := other.p[i].m[k]
+			xhash := reduce(metro.Hash64Str(k, 0), len(s.alphas))
+			min1 := other.alphas[xhash]
+			min2 := other.alphas[xhash]
 
-	// sort the elements
-	elts := make([]Element, 0, len(eMap))
-	for _, v := range eMap {
-		elts = append(elts, v)
-	}
-	sort.Sort(elementsByCountDescending(elts))
+			switch {
+			case ok1 && ok2:
+				e1 := s.p[i].elts[idx1]
+				e2 := other.p[i].elts[idx2]
+				eMap[k] = Element{
+					Key:   k,
+					Count: e1.Count + e2.Count,
+					Error: e1.Error + e2.Error,
+				}
+			case ok1:
+				e1 := s.p[i].elts[idx1]
+				eMap[k] = Element{
+					Key:   k,
+					Count: e1.Count + min2,
+					Error: e1.Error + min2,
+				}
+			case ok2:
+				e2 := other.p[i].elts[idx2]
+				eMap[k] = Element{
+					Key:   k,
+					Count: e2.Count + min1,
+					Error: e2.Error + min1,
+				}
+			}
 
-	// trim elements
-	if len(elts) > s.n {
-		elts = elts[:s.n]
-	}
+		}
 
-	// create heap
-	tk := keys{
-		m:    make(map[string]int),
-		elts: make([]Element, 0, s.n),
-	}
-	for _, e := range elts {
-		heap.Push(&tk, e)
-	}
+		// sort the elements
+		elts := make([]Element, 0, len(eMap))
+		for _, v := range eMap {
+			elts = append(elts, v)
+		}
+		sort.Sort(elementsByCountDescending(elts))
 
-	// modify alphas
-	for i, v := range other.alphas {
-		s.alphas[i] += v
-	}
+		// trim elements
+		if len(elts) > s.n {
+			elts = elts[:s.n]
+		}
 
-	// replace k
-	s.k = tk
+		// create heap
+		tk := keys{
+			m:    make(map[string]int),
+			elts: make([]Element, 0, s.n),
+		}
+		for _, e := range elts {
+			heap.Push(&tk, e)
+		}
+
+		// modify alphas
+		for i, v := range other.alphas {
+			s.alphas[i] += v
+		}
+
+		// replace k
+		s.p[i] = tk
+	}
 	return nil
 }
 
 // Keys returns the current estimates for the most frequent elements
 func (s *Stream) Keys() []Element {
-	elts := append([]Element(nil), s.k.elts...)
+	l := 1 + s.n/len(s.p)
+	elts := make([]Element, 0, l*len(s.p))
+	for _, p := range s.p {
+		elts = append(elts, p.elts...)
+	}
 	sort.Sort(elementsByCountDescending(elts))
 	if len(elts) > s.n {
 		elts = elts[:s.n]
@@ -320,11 +359,13 @@ func (s *Stream) Keys() []Element {
 
 // Estimate returns an estimate for the item x
 func (s *Stream) Estimate(x string) Element {
-	xhash := reduce(metro.Hash64Str(x, 0), len(s.alphas))
+	strHash := metro.Hash64Str(x, 0)
+	xhash := reduce(strHash, len(s.alphas))
+	i := strHash % uint64(len(s.p))
 
 	// are we tracking this element?
-	if idx, ok := s.k.m[x]; ok {
-		e := s.k.elts[idx]
+	if idx, ok := s.p[i].m[x]; ok {
+		e := s.p[i].elts[idx]
 		return e
 	}
 
@@ -353,7 +394,7 @@ func (s *Stream) EncodeMsgp(w *msgp.Writer) error {
 		}
 	}
 
-	return s.k.EncodeMsgp(w)
+	return s.p.EncodeMsgp(w)
 }
 
 // DecodeMsgp ...
@@ -378,7 +419,7 @@ func (s *Stream) DecodeMsgp(r *msgp.Reader) error {
 		}
 	}
 
-	return s.k.DecodeMsp(r)
+	return s.p.DecodeMsgp(r)
 }
 
 // Encode ...
