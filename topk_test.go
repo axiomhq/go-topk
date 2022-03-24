@@ -137,7 +137,6 @@ func TestTopKMerge(t *testing.T) {
 
 	r1, r2 := tk1.Keys(), mtk.Keys()
 	for i := range r1 {
-		fmt.Println(r1[i], r2[i])
 		if r1[i] != r2[i] {
 			t.Errorf("%v != %v", r1[i], r2[i])
 		}
@@ -426,8 +425,6 @@ func TestMarshalUnMarshal(t *testing.T) {
 	b := bytes.NewBuffer(nil)
 	err := sketch.Encode(b)
 	assert.NoError(t, err)
-
-	fmt.Println(len(b.Bytes()))
 
 	tmp := &Stream{}
 	err = tmp.Decode(b)
