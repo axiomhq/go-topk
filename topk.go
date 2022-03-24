@@ -59,7 +59,7 @@ func (p *partitions) DecodeMsgp(r *msgp.Reader) error {
 	var (
 		err error
 	)
-	for i := 0; i < 6; i++ {
+	for i := 0; i < nPartitions; i++ {
 		if err = p[i].DecodeMsgp(r); err != nil {
 			return err
 		}
@@ -221,7 +221,7 @@ func (s *Stream) Insert(x string, count int) Element {
 
 	// can we track more elements?
 	if len(s.p[i].elts) < s.n {
-		// there is free sp[i]ace
+		// there is free space
 		e := Element{Key: x, Count: count}
 		heap.Push(&s.p[i], e)
 		return e
@@ -281,7 +281,7 @@ func (s *Stream) Merge(other *Stream) error {
 			idx1, ok1 := s.p[i].m[k]
 			idx2, ok2 := other.p[i].m[k]
 			xhash := reduce(metro.Hash64Str(k, 0), len(s.alphas))
-			min1 := other.alphas[xhash]
+			min1 := s.alphas[xhash]
 			min2 := other.alphas[xhash]
 
 			switch {
